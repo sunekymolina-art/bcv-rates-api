@@ -1,8 +1,8 @@
 const express = require('express');
 const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 const https = require('https');
 const agent = new https.Agent({ rejectUnauthorized: false });
-const cheerio = require('cheerio');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,34 +11,46 @@ const CACHE_TTL = 60 * 60 * 1000;
 let cache = { data: null, timestamp: 0 };
 
 async function scrapeRates() {
-  const res = await fetch('https://www.bcv.org.ve/', {
-    agent,
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'es-VE,es;q=0.9,en;q=0.8',
-      'Connection': 'keep-alive'
-    }
-  });
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'es-VE,es;q=0.9,en;q=0.8',
+    'Connection': 'keep-alive'
+  };
 
-  const html = await res.text();
-  const $ = cheerio.load(html);
+  const [bcvRes, idiRes] = await Promise.all([
+    fetch('https://www.bcv.org.ve/', { headers, agent }),
+    fetch('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers, agent })
+  ]);
+
+  const bcvHtml = await bcvRes.text();
+  const idiHtml = await idiRes.text();
+
+  const $bcv = cheerio.load(bcvHtml);
+  const $idi = cheerio.load(idiHtml);
 
   let dolar = null;
-  const dolarText = $('#dolar strong').first().text().trim();
+  const dolarText = $bcv('#dolar strong').first().text().trim();
   if (dolarText) {
     dolar = parseFloat(dolarText.replace(/\./g, '').replace(',', '.'));
   }
 
   let idi = null;
-  const idiMatch = html.match(/IDI[\s\S]{0,300}?([\d]{1,4}[.,][\d]{2,8})/i);
-  if (idiMatch) {
-    idi = parseFloat(idiMatch[1].replace(',', '.'));
+  let idiDate = null;
+  const firstRow = $idi('tbody tr.views-row-first, tbody tr').first();
+  if (firstRow.length) {
+    const cells = firstRow.find('td');
+    idiDate = cells.eq(0).text().trim();
+    const idiText = cells.last().text().trim();
+    if (idiText && idiText !== 'N/A') {
+      idi = parseFloat(idiText.replace(/\./g, '').replace(',', '.'));
+    }
   }
 
   return {
     dolar: isNaN(dolar) ? null : dolar,
     idi: isNaN(idi) ? null : idi,
+    idi_date: idiDate || null,
     updated_at: new Date().toISOString()
   };
 }
