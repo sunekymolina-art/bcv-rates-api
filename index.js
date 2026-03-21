@@ -10,14 +10,14 @@ const CACHE_TTL = 60 * 60 * 1000;
 
 let cache = { data: null, timestamp: 0 };
 
-async function scrapeCurrentRates() {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'es-VE,es;q=0.9,en;q=0.8',
-    'Connection': 'keep-alive'
-  };
+const headers = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'es-VE,es;q=0.9,en;q=0.8',
+  'Connection': 'keep-alive'
+};
 
+async function scrapeCurrentRates() {
   const [bcvRes, idiRes] = await Promise.all([
     fetch('https://www.bcv.org.ve/', { headers, agent }),
     fetch('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers, agent })
@@ -37,7 +37,7 @@ async function scrapeCurrentRates() {
 
   let idi = null;
   let idiDate = null;
-  const firstRow = $idi('tbody tr.views-row-first, tbody tr').first();
+  const firstRow = $idi('tbody tr').first();
   if (firstRow.length) {
     const cells = firstRow.find('td');
     idiDate = cells.eq(0).text().trim();
@@ -55,15 +55,8 @@ async function scrapeCurrentRates() {
   };
 }
 
-async function scrapeIdiByDate(dateFrom, dateTo) {
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.8',
-    'Accept-Language': 'es-VE,es;q=0.9',
-    'Connection': 'keep-alive'
-  };
-
-  const url = `https://www.bcv.org.ve/estadisticas/indice-de-inversion?date_filter[value][date]=${dateFrom}&date_filter_1[value][date]=${dateTo}`;
+async function scrapePageRows(page) {
+  const url = `https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=${page}`;
   const res = await fetch(url, { headers, agent });
   const html = await res.text();
   const $ = cheerio.load(html);
@@ -74,7 +67,7 @@ async function scrapeIdiByDate(dateFrom, dateTo) {
     const fecha = cells.eq(0).text().trim();
     const dolarCell = cells.eq(1).text().trim();
     const idiCell = cells.last().text().trim();
-    if (fecha) {
+    if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
       rows.push({
         fecha,
         dolar: dolarCell && dolarCell !== 'N/A' ? parseFloat(dolarCell.replace(/\./g, '').replace(',', '.')) : null,
@@ -84,6 +77,28 @@ async function scrapeIdiByDate(dateFrom, dateTo) {
   });
 
   return rows;
+}
+
+async function findRateByDate(targetDate) {
+  // targetDate formato: DD-MM-YYYY
+  for (let page = 0; page <= 31; page++) {
+    const rows = await scrapePageRows(page);
+    if (rows.length === 0) break;
+
+    const match = rows.find(r => r.fecha === targetDate);
+    if (match) return match;
+
+    // Si la fecha buscada es mayor que la última fila de esta página, no está en páginas siguientes
+    const lastRow = rows[rows.length - 1];
+    if (lastRow) {
+      const [dd, mm, yyyy] = lastRow.fecha.split('-');
+      const [tdd, tmm, tyyyy] = targetDate.split('-');
+      const lastDate = new Date(`${yyyy}-${mm}-${dd}`);
+      const target = new Date(`${tyyyy}-${tmm}-${tdd}`);
+      if (target > lastDate && page > 0) break;
+    }
+  }
+  return null;
 }
 
 app.use((req, res, next) => {
@@ -109,15 +124,23 @@ app.get('/api/rates', async (req, res) => {
 
 app.get('/api/rates/history', async (req, res) => {
   const { from, to } = req.query;
-  if (!from || !to) {
-    return res.status(400).json({ error: 'Se requieren parámetros from y to (formato: DD-MM-YYYY)' });
+  if (!from) {
+    return res.status(400).json({ error: 'Se requiere parámetro from (formato: DD-MM-YYYY)' });
   }
   try {
-    const rows = await scrapeIdiByDate(from, to);
+    if (from === to || !to) {
+      const result = await findRateByDate(from);
+      if (result) {
+        return res.json({ rows: [result], from, to: from });
+      } else {
+        return res.status(404).json({ error: 'No se encontró tasa para esa fecha', from });
+      }
+    }
+    const rows = await scrapePageRows(0);
     res.json({ rows, from, to });
   } catch (err) {
     console.error('Error history:', err.message);
-    res.status(503).json({ error: 'No se pudieron obtener los datos históricos', detail: err.message });
+    res.status(503).json({ error: 'No se pudieron obtener los datos', detail: err.message });
   }
 });
 
