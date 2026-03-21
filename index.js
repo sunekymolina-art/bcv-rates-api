@@ -8,7 +8,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 
-let cache = { data: null, timestamp: 0 };
+let currentCache = { data: null, timestamp: 0 };
+const dateCache = {}; // caché por fecha específica
 
 const headers = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -80,15 +81,22 @@ async function scrapePageRows(page) {
 }
 
 async function findRateByDate(targetDate) {
-  // targetDate formato: DD-MM-YYYY
-  for (let page = 0; page <= 31; page++) {
+  // Si ya está en caché, respuesta instantánea
+  if (dateCache[targetDate]) {
+    return dateCache[targetDate];
+  }
+
+  for (let page = 0; page <= 35; page++) {
     const rows = await scrapePageRows(page);
     if (rows.length === 0) break;
+
+    // Guardar todas las filas de esta página en caché
+    rows.forEach(r => { dateCache[r.fecha] = r; });
 
     const match = rows.find(r => r.fecha === targetDate);
     if (match) return match;
 
-    // Si la fecha buscada es mayor que la última fila de esta página, no está en páginas siguientes
+    // Si la fecha buscada es más reciente que la última fila, no está más adelante
     const lastRow = rows[rows.length - 1];
     if (lastRow) {
       const [dd, mm, yyyy] = lastRow.fecha.split('-');
@@ -98,7 +106,24 @@ async function findRateByDate(targetDate) {
       if (target > lastDate && page > 0) break;
     }
   }
+
   return null;
+}
+
+// Precarga en segundo plano al arrancar el servidor
+async function preloadCache() {
+  console.log('Precargando caché de tasas históricas...');
+  try {
+    for (let page = 0; page <= 35; page++) {
+      const rows = await scrapePageRows(page);
+      if (rows.length === 0) break;
+      rows.forEach(r => { dateCache[r.fecha] = r; });
+      console.log(`Página ${page} cargada — ${Object.keys(dateCache).length} fechas en caché`);
+    }
+    console.log('Precarga completa:', Object.keys(dateCache).length, 'fechas disponibles');
+  } catch (err) {
+    console.error('Error en precarga:', err.message);
+  }
 }
 
 app.use((req, res, next) => {
@@ -108,44 +133,58 @@ app.use((req, res, next) => {
 
 app.get('/api/rates', async (req, res) => {
   const now = Date.now();
-  if (cache.data && (now - cache.timestamp) < CACHE_TTL) {
-    return res.json({ ...cache.data, cached: true });
+  if (currentCache.data && (now - currentCache.timestamp) < CACHE_TTL) {
+    return res.json({ ...currentCache.data, cached: true });
   }
   try {
     const rates = await scrapeCurrentRates();
-    cache = { data: rates, timestamp: now };
+    currentCache = { data: rates, timestamp: now };
     res.json({ ...rates, cached: false });
   } catch (err) {
     console.error('Error:', err.message);
-    if (cache.data) return res.json({ ...cache.data, cached: true, stale: true });
+    if (currentCache.data) return res.json({ ...currentCache.data, cached: true, stale: true });
     res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
   }
 });
 
 app.get('/api/rates/history', async (req, res) => {
-  const { from, to } = req.query;
+  const { from } = req.query;
   if (!from) {
     return res.status(400).json({ error: 'Se requiere parámetro from (formato: DD-MM-YYYY)' });
   }
   try {
-    if (from === to || !to) {
-      const result = await findRateByDate(from);
-      if (result) {
-        return res.json({ rows: [result], from, to: from });
-      } else {
-        return res.status(404).json({ error: 'No se encontró tasa para esa fecha', from });
-      }
+    const result = await findRateByDate(from);
+    if (result) {
+      return res.json({ rows: [result], from });
+    } else {
+      return res.status(404).json({ error: 'No se encontró tasa para esa fecha', from });
     }
-    const rows = await scrapePageRows(0);
-    res.json({ rows, from, to });
   } catch (err) {
     console.error('Error history:', err.message);
     res.status(503).json({ error: 'No se pudieron obtener los datos', detail: err.message });
   }
 });
 
+app.get('/api/cache/status', (req, res) => {
+  res.json({
+    fechas_en_cache: Object.keys(dateCache).length,
+    primera: Object.keys(dateCache).sort()[0],
+    ultima: Object.keys(dateCache).sort().reverse()[0]
+  });
+});
+
 app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'BCV Rates API funcionando' });
 });
 
-app.listen(PORT, () => console.log('Servidor corriendo en puerto ' + PORT));
+app.listen(PORT, () => {
+  console.log('Servidor corriendo en puerto ' + PORT);
+  preloadCache(); // arranca la precarga en segundo plano
+});
+```
+
+**"Commit changes"** → **"Commit directly to the main branch"** → **"Commit changes"**. ✅
+
+Lo que hace esto es que cuando el servidor arranca, **descarga todas las páginas del BCV en segundo plano** y guarda todas las fechas en memoria. Así cualquier búsqueda posterior es instantánea. Podés verificar cuántas fechas cargó con:
+```
+https://bcv-rates-api-production.up.railway.app/api/cache/status
