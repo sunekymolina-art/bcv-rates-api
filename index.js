@@ -48,26 +48,35 @@ async function scrapeCurrentRates() {
 }
 
 async function scrapePageRows(page) {
-  const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
-  const res = await fetch(url, { headers, agent });
-  const html = await res.text();
-  const $ = cheerio.load(html);
-  const rows = [];
-  $('tbody tr').each((i, el) => {
-    const cells = $(el).find('td');
-    const fecha = cells.eq(0).text().trim();
-    const dolarCell = cells.eq(1).text().trim();
-    const idiCell = cells.last().text().trim();
-    if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
-      rows.push({
-        fecha,
-        dolar: dolarCell && dolarCell !== 'N/A' ? parseFloat(dolarCell.replace(/\./g, '').replace(',', '.')) : null,
-        idi: idiCell && idiCell !== 'N/A' ? parseFloat(idiCell.replace(/\./g, '').replace(',', '.')) : null
-      });
-    }
-  });
-  return rows;
+  console.log('Intentando pagina ' + page + '...');
+  try {
+    const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
+    const res = await fetch(url, { headers, agent, timeout: 20000 });
+    console.log('Respuesta pagina ' + page + ': ' + res.status);
+    const html = await res.text();
+    const $ = cheerio.load(html);
+    const rows = [];
+    $('tbody tr').each((i, el) => {
+      const cells = $(el).find('td');
+      const fecha = cells.eq(0).text().trim();
+      const dolarCell = cells.eq(1).text().trim();
+      const idiCell = cells.last().text().trim();
+      if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
+        rows.push({
+          fecha,
+          dolar: dolarCell && dolarCell !== 'N/A' ? parseFloat(dolarCell.replace(/\./g, '').replace(',', '.')) : null,
+          idi: idiCell && idiCell !== 'N/A' ? parseFloat(idiCell.replace(/\./g, '').replace(',', '.')) : null
+        });
+      }
+    });
+    console.log('Filas encontradas en pagina ' + page + ': ' + rows.length);
+    return rows;
+  } catch (err) {
+    console.error('Error fetch pagina ' + page + ': ' + err.message);
+    return [];
+  }
 }
+
 async function findRateByDate(targetDate) {
   if (dateCache[targetDate]) return dateCache[targetDate];
 
