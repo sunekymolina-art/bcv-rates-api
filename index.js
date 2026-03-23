@@ -126,10 +126,27 @@ app.get('/api/rates', async (req, res) => {
 app.get('/api/rates/history', async (req, res) => {
   const { from } = req.query;
   if (!from) return res.status(400).json({ error: 'Se requiere parametro from (DD-MM-YYYY)' });
+
+  const [dd, mm, yyyy] = from.split('-');
+  const fecha = new Date(`${yyyy}-${mm}-${dd}`);
+  const diaSemana = fecha.getDay();
+
+  if (diaSemana === 0 || diaSemana === 6) {
+    return res.status(400).json({
+      error: 'Sin tasa disponible',
+      motivo: 'El BCV no publica tasas los sábados ni domingos',
+      from
+    });
+  }
+
   try {
     const result = await findRateByDate(from);
     if (result) return res.json({ rows: [result], from });
-    return res.status(404).json({ error: 'No se encontro tasa para esa fecha', from });
+    return res.status(404).json({
+      error: 'Sin tasa disponible',
+      motivo: 'El BCV no publicó tasa para este día (posible feriado)',
+      from
+    });
   } catch (err) {
     res.status(503).json({ error: 'No se pudieron obtener los datos', detail: err.message });
   }
