@@ -54,7 +54,9 @@ async function scrapePageRows(page) {
     const res = await fetch(url, { headers, agent, timeout: 20000 });
     console.log('Respuesta pagina ' + page + ': ' + res.status);
     const html = await res.text();
-    const $ = cheerio.load(html);
+    console.log('HTML recibido, tamaño: ' + html.length);
+    const $ = cheerio.load(html, { decodeEntities: false });
+    console.log('Cheerio cargado');
     const rows = [];
     $('tbody tr').each((i, el) => {
       const cells = $(el).find('td');
