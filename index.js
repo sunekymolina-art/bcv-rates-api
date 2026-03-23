@@ -1,11 +1,27 @@
 const express = require('express');
 const fetch = require('node-fetch');
+const cheerio = require('cheerio');
+const https = require('https');
 
+const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
 const dateCache = {};
+
+const getHeaders = () => ({
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html',
+  'Connection': 'keep-alive'
+});
+
+function fetchWithTimeout(url, options, ms = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...options, signal: controller.signal })
+    .finally(() => clearTimeout(timer));
+}
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -22,12 +38,30 @@ app.get('/api/rates', async (req, res) => {
     return res.json({ ...currentCache.data, cached: true });
   }
   try {
-    const res2 = await fetch('https://ve.dolarapi.com/v1/dolares/oficial');
-    const data = await res2.json();
+    const [bcvRes, idiRes] = await Promise.all([
+      fetchWithTimeout('https://www.bcv.org.ve/', { headers: getHeaders(), agent }, 10000),
+      fetchWithTimeout('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers: getHeaders(), agent }, 10000)
+    ]);
+    const bcvHtml = await bcvRes.text();
+    const idiHtml = await idiRes.text();
+    const $bcv = cheerio.load(bcvHtml);
+    const $idi = cheerio.load(idiHtml);
+    let dolar = null;
+    const dolarText = $bcv('#dolar strong').first().text().trim();
+    if (dolarText) dolar = parseFloat(dolarText.replace(/\./g, '').replace(',', '.'));
+    let idi = null;
+    let idiDate = null;
+    const firstRow = $idi('tbody tr').first();
+    if (firstRow.length) {
+      const cells = firstRow.find('td');
+      idiDate = cells.eq(0).text().trim();
+      const idiText = cells.last().text().trim();
+      if (idiText && idiText !== 'N/A') idi = parseFloat(idiText.replace(/\./g, '').replace(',', '.'));
+    }
     const rates = {
-      dolar: data.promedio || null,
-      idi: null,
-      idi_date: null,
+      dolar: isNaN(dolar) ? null : dolar,
+      idi: isNaN(idi) ? null : idi,
+      idi_date: idiDate || null,
       updated_at: new Date().toISOString()
     };
     currentCache = { data: rates, timestamp: now };
@@ -58,20 +92,50 @@ app.get('/api/rates/history', async (req, res) => {
   }
 
   try {
-    const isoDate = yyyy + '-' + mm + '-' + dd;
-    const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial/historico?fecha=' + isoDate);
-    const data = await response.json();
-    console.log('DolarAPI response:', JSON.stringify(data));
+    for (let page = 0; page <= 35; page++) {
+      const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
+      let html;
+      try {
+        const r = await fetchWithTimeout(url, { headers: getHeaders(), agent }, 12000);
+        html = await r.text();
+      } catch (e) {
+        console.error('Timeout pag ' + page);
+        continue;
+      }
 
-    if (data && data.promedio) {
-      const row = { fecha: from, dolar: data.promedio, idi: null };
-      dateCache[from] = row;
-      return res.json({ rows: [row], from });
+      const $ = cheerio.load(html);
+      const rows = [];
+      $('tbody tr').each((i, el) => {
+        const cells = $(el).find('td');
+        const f = cells.eq(0).text().trim();
+        const d = cells.eq(1).text().trim();
+        const id = cells.last().text().trim();
+        if (f && f.match(/\d{2}-\d{2}-\d{4}/)) {
+          rows.push({
+            fecha: f,
+            dolar: d && d !== 'N/A' ? parseFloat(d.replace(/\./g, '').replace(',', '.')) : null,
+            idi: id && id !== 'N/A' ? parseFloat(id.replace(/\./g, '').replace(',', '.')) : null
+          });
+        }
+      });
+
+      if (rows.length === 0) break;
+      rows.forEach(r => { dateCache[r.fecha] = r; });
+
+      const match = rows.find(r => r.fecha === from);
+      if (match) return res.json({ rows: [match], from });
+
+      const last = rows[rows.length - 1];
+      if (last) {
+        const [ldd, lmm, lyyyy] = last.fecha.split('-');
+        const lastDate = new Date(lyyyy + '-' + lmm + '-' + ldd);
+        if (fecha > lastDate && page > 0) break;
+      }
     }
 
     return res.status(404).json({
       error: 'Sin tasa disponible',
-      motivo: 'No se encontro tasa para este dia (posible feriado)',
+      motivo: 'El BCV no publico tasa para este dia (posible feriado)',
       from
     });
   } catch (err) {
