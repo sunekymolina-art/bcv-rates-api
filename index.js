@@ -2,13 +2,41 @@ const express = require('express');
 const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const https = require('https');
+const { Pool } = require('pg');
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
-const dateCache = {};
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_PUBLIC_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tasas (
+      fecha VARCHAR(10) PRIMARY KEY,
+      dolar NUMERIC,
+      idi NUMERIC
+    )
+  `);
+  console.log('Base de datos lista');
+}
+
+async function getRateFromDB(fecha) {
+  const result = await pool.query('SELECT * FROM tasas WHERE fecha = $1', [fecha]);
+  return result.rows[0] || null;
+}
+
+async function saveRateToDB(row) {
+  await pool.query(
+    'INSERT INTO tasas (fecha, dolar, idi) VALUES ($1, $2, $3) ON CONFLICT (fecha) DO NOTHING',
+    [row.fecha, row.dolar, row.idi]
+  );
+}
 
 const getHeaders = () => ({
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -16,7 +44,7 @@ const getHeaders = () => ({
   'Connection': 'keep-alive'
 });
 
-function fetchWithTimeout(url, options, ms = 10000) {
+function fetchWithTimeout(url, options, ms = 12000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   return fetch(url, { ...options, signal: controller.signal })
@@ -28,8 +56,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', fechas_en_cache: Object.keys(dateCache).length });
+app.get('/', async (req, res) => {
+  const result = await pool.query('SELECT COUNT(*) FROM tasas');
+  res.json({ status: 'ok', fechas_en_db: parseInt(result.rows[0].count) });
 });
 
 app.get('/api/rates', async (req, res) => {
@@ -39,8 +68,8 @@ app.get('/api/rates', async (req, res) => {
   }
   try {
     const [bcvRes, idiRes] = await Promise.all([
-      fetchWithTimeout('https://www.bcv.org.ve/', { headers: getHeaders(), agent }, 10000),
-      fetchWithTimeout('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers: getHeaders(), agent }, 10000)
+      fetchWithTimeout('https://www.bcv.org.ve/', { headers: getHeaders(), agent }),
+      fetchWithTimeout('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers: getHeaders(), agent })
     ]);
     const bcvHtml = await bcvRes.text();
     const idiHtml = await idiRes.text();
@@ -87,19 +116,22 @@ app.get('/api/rates/history', async (req, res) => {
     });
   }
 
-  if (dateCache[from]) {
-    return res.json({ rows: [dateCache[from]], from });
-  }
-
   try {
+    const cached = await getRateFromDB(from);
+    if (cached) {
+      console.log('DB hit: ' + from);
+      return res.json({ rows: [{ fecha: cached.fecha, dolar: parseFloat(cached.dolar), idi: parseFloat(cached.idi) }], from });
+    }
+
+    console.log('Buscando en BCV: ' + from);
     for (let page = 0; page <= 35; page++) {
       const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
       let html;
       try {
-        const r = await fetchWithTimeout(url, { headers: getHeaders(), agent }, 12000);
+        const r = await fetchWithTimeout(url, { headers: getHeaders(), agent });
         html = await r.text();
       } catch (e) {
-        console.error('Timeout pag ' + page);
+        console.error('Timeout pag ' + page + ': ' + e.message);
         continue;
       }
 
@@ -120,7 +152,10 @@ app.get('/api/rates/history', async (req, res) => {
       });
 
       if (rows.length === 0) break;
-      rows.forEach(r => { dateCache[r.fecha] = r; });
+
+      for (const row of rows) {
+        await saveRateToDB(row);
+      }
 
       const match = rows.find(r => r.fecha === from);
       if (match) return res.json({ rows: [match], from });
@@ -139,15 +174,18 @@ app.get('/api/rates/history', async (req, res) => {
       from
     });
   } catch (err) {
+    console.error('Error:', err.message);
     res.status(503).json({ error: 'Error buscando tasa', detail: err.message });
   }
 });
 
-app.get('/api/cache/status', (req, res) => {
-  const keys = Object.keys(dateCache).sort();
-  res.json({ fechas_en_cache: keys.length, primera: keys[0], ultima: keys[keys.length - 1] });
+app.get('/api/cache/status', async (req, res) => {
+  const result = await pool.query('SELECT COUNT(*), MIN(fecha), MAX(fecha) FROM tasas');
+  const row = result.rows[0];
+  res.json({ fechas_en_db: parseInt(row.count), primera: row.min, ultima: row.max });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log('Servidor en puerto ' + PORT);
+  await initDB();
 });
