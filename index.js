@@ -66,6 +66,55 @@ app.get('/api/rates', async (req, res) => {
   }
 });
 
+async function findRateByDate(targetDate) {
+  if (dateCache[targetDate]) {
+    console.log('Cache hit: ' + targetDate);
+    return dateCache[targetDate];
+  }
+  console.log('Buscando en BCV: ' + targetDate);
+  for (let page = 0; page <= 35; page++) {
+    try {
+      const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
+      console.log('Fetch: ' + url);
+      const res = await fetch(url, { headers, agent });
+      console.log('Status pag ' + page + ': ' + res.status);
+      const html = await res.text();
+      const $ = cheerio.load(html);
+      const rows = [];
+      $('tbody tr').each((i, el) => {
+        const cells = $(el).find('td');
+        const fecha = cells.eq(0).text().trim();
+        const dolarCell = cells.eq(1).text().trim();
+        const idiCell = cells.last().text().trim();
+        if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
+          rows.push({
+            fecha,
+            dolar: dolarCell && dolarCell !== 'N/A' ? parseFloat(dolarCell.replace(/\./g, '').replace(',', '.')) : null,
+            idi: idiCell && idiCell !== 'N/A' ? parseFloat(idiCell.replace(/\./g, '').replace(',', '.')) : null
+          });
+        }
+      });
+      console.log('Filas pag ' + page + ': ' + rows.length);
+      if (rows.length === 0) break;
+      rows.forEach(r => { dateCache[r.fecha] = r; });
+      const match = rows.find(r => r.fecha === targetDate);
+      if (match) { console.log('Encontrado!'); return match; }
+      const lastRow = rows[rows.length - 1];
+      if (lastRow) {
+        const [dd, mm, yyyy] = lastRow.fecha.split('-');
+        const [tdd, tmm, tyyyy] = targetDate.split('-');
+        const lastDate = new Date(yyyy + '-' + mm + '-' + dd);
+        const target = new Date(tyyyy + '-' + tmm + '-' + tdd);
+        if (target > lastDate && page > 0) { console.log('Fecha mas reciente que ultima fila, saliendo'); break; }
+      }
+    } catch (err) {
+      console.error('Error pag ' + page + ': ' + err.message);
+      break;
+    }
+  }
+  return null;
+}
+
 app.get('/api/rates/history', async (req, res) => {
   const { from } = req.query;
   if (!from) return res.status(400).json({ error: 'Se requiere from en formato DD-MM-YYYY' });
@@ -81,32 +130,17 @@ app.get('/api/rates/history', async (req, res) => {
     });
   }
 
-  if (dateCache[from]) {
-    return res.json({ rows: [dateCache[from]], from });
+  try {
+    const result = await findRateByDate(from);
+    if (result) return res.json({ rows: [result], from });
+    return res.status(404).json({
+      error: 'Sin tasa disponible',
+      motivo: 'El BCV no publico tasa para este dia (posible feriado)',
+      from
+    });
+  } catch (err) {
+    res.status(503).json({ error: 'Error buscando tasa', detail: err.message });
   }
-
-  const keys = Object.keys(dateCache).sort();
-  if (keys.length > 500) {
-    const primera = keys[0];
-    const ultima = keys[keys.length - 1];
-    const [pdd, pmm, pyyyy] = primera.split('-');
-    const [udd, umm, uyyy] = ultima.split('-');
-    const primerDate = new Date(pyyyy + '-' + pmm + '-' + pdd);
-    const ultimaDate = new Date(uyyy + '-' + umm + '-' + udd);
-    if (fecha >= primerDate && fecha <= ultimaDate) {
-      return res.status(404).json({
-        error: 'Sin tasa disponible',
-        motivo: 'El BCV no publico tasa para este dia (posible feriado)',
-        from
-      });
-    }
-  }
-
-  return res.status(404).json({
-    error: 'Sin tasa disponible',
-    motivo: 'Fecha fuera del rango disponible',
-    from
-  });
 });
 
 app.get('/api/cache/status', (req, res) => {
@@ -114,46 +148,6 @@ app.get('/api/cache/status', (req, res) => {
   res.json({ fechas_en_cache: keys.length, primera: keys[0], ultima: keys[keys.length - 1] });
 });
 
-async function scrapePageRows(page) {
-  const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
-  const res = await fetch(url, { headers, agent });
-  const html = await res.text();
-  const $ = cheerio.load(html);
-  const rows = [];
-  $('tbody tr').each((i, el) => {
-    const cells = $(el).find('td');
-    const fecha = cells.eq(0).text().trim();
-    const dolarCell = cells.eq(1).text().trim();
-    const idiCell = cells.last().text().trim();
-    if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
-      rows.push({
-        fecha,
-        dolar: dolarCell && dolarCell !== 'N/A' ? parseFloat(dolarCell.replace(/\./g, '').replace(',', '.')) : null,
-        idi: idiCell && idiCell !== 'N/A' ? parseFloat(idiCell.replace(/\./g, '').replace(',', '.')) : null
-      });
-    }
-  });
-  return rows;
-}
-
-async function preloadCache() {
-  console.log('Iniciando precarga...');
-  for (let page = 0; page <= 35; page++) {
-    try {
-      const rows = await scrapePageRows(page);
-      if (rows.length === 0) { console.log('Fin en pagina ' + page); break; }
-      rows.forEach(r => { dateCache[r.fecha] = r; });
-      console.log('Pag ' + page + ': ' + Object.keys(dateCache).length + ' fechas total');
-      await new Promise(r => setTimeout(r, 500));
-    } catch (err) {
-      console.error('Error pag ' + page + ': ' + err.message);
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  }
-  console.log('Precarga lista: ' + Object.keys(dateCache).length + ' fechas');
-}
-
 app.listen(PORT, () => {
   console.log('Servidor en puerto ' + PORT);
-  setTimeout(preloadCache, 3000);
 });
