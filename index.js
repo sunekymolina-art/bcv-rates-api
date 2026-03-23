@@ -70,6 +70,25 @@ async function scrapePageRows(page) {
 }
 async function findRateByDate(targetDate) {
   if (dateCache[targetDate]) return dateCache[targetDate];
+
+  // Si el caché ya tiene muchas fechas y no está ahí, es feriado
+  if (Object.keys(dateCache).length > 500) {
+    const keys = Object.keys(dateCache).sort();
+    const primera = keys[0];
+    const ultima = keys[keys.length - 1];
+    const [tdd, tmm, tyyyy] = targetDate.split('-');
+    const target = new Date(tyyyy + '-' + tmm + '-' + tdd);
+    const [pdd, pmm, pyyyy] = primera.split('-');
+    const [udd, umm, uyyy] = ultima.split('-');
+    const primerDate = new Date(pyyyy + '-' + pmm + '-' + pdd);
+    const ultimaDate = new Date(uyyy + '-' + umm + '-' + udd);
+
+    // Si la fecha está dentro del rango del caché y no está, es feriado
+    if (target >= primerDate && target <= ultimaDate) {
+      return null;
+    }
+  }
+
   for (let page = 0; page <= 35; page++) {
     const rows = await scrapePageRows(page);
     if (rows.length === 0) break;
