@@ -111,14 +111,23 @@ async function preloadCache() {
   console.log('Precargando cache...');
   try {
     for (let page = 0; page <= 35; page++) {
-      const rows = await scrapePageRows(page);
-      if (rows.length === 0) break;
-      rows.forEach(r => { dateCache[r.fecha] = r; });
-      console.log('Pagina ' + page + ' lista. Total: ' + Object.keys(dateCache).length);
+      try {
+        const rows = await scrapePageRows(page);
+        if (rows.length === 0) {
+          console.log('Pagina ' + page + ' vacia, fin de precarga');
+          break;
+        }
+        rows.forEach(r => { dateCache[r.fecha] = r; });
+        console.log('Pagina ' + page + ' lista. Total: ' + Object.keys(dateCache).length);
+      } catch (pageErr) {
+        console.error('Error en pagina ' + page + ': ' + pageErr.message);
+        // Esperar 2 segundos y continuar con la siguiente página
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
     console.log('Precarga completa: ' + Object.keys(dateCache).length + ' fechas');
   } catch (err) {
-    console.error('Error precarga:', err.message);
+    console.error('Error general precarga:', err.message);
   }
 }
 
