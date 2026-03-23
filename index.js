@@ -10,6 +10,8 @@ const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
 
+console.log('DB URL:', process.env.DATABASE_PUBLIC_URL ? 'definida' : 'NO DEFINIDA');
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_PUBLIC_URL,
   ssl: { rejectUnauthorized: false }
