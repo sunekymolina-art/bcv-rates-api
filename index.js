@@ -7,6 +7,7 @@ const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
+
 let currentCache = { data: null, timestamp: 0 };
 const dateCache = {};
 
@@ -17,6 +18,7 @@ const headers = {
   'Connection': 'keep-alive'
 };
 
+// ✅ CORS corregido — ahora responde a OPTIONS (preflight)
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -36,18 +38,23 @@ app.get('/api/rates', async (req, res) => {
   if (currentCache.data && (now - currentCache.timestamp) < CACHE_TTL) {
     return res.json({ ...currentCache.data, cached: true });
   }
+
   try {
     const [bcvRes, idiRes] = await Promise.all([
       fetch('https://www.bcv.org.ve/', { headers, agent }),
       fetch('https://www.bcv.org.ve/estadisticas/indice-de-inversion', { headers, agent })
     ]);
+
     const bcvHtml = await bcvRes.text();
     const idiHtml = await idiRes.text();
+
     const $bcv = cheerio.load(bcvHtml);
     const $idi = cheerio.load(idiHtml);
+
     let dolar = null;
     const dolarText = $bcv('#dolar strong').first().text().trim();
     if (dolarText) dolar = parseFloat(dolarText.replace(/\./g, '').replace(',', '.'));
+
     let idi = null;
     let idiDate = null;
     const firstRow = $idi('tbody tr').first();
@@ -57,14 +64,17 @@ app.get('/api/rates', async (req, res) => {
       const idiText = cells.last().text().trim();
       if (idiText && idiText !== 'N/A') idi = parseFloat(idiText.replace(/\./g, '').replace(',', '.'));
     }
+
     const rates = {
       dolar: isNaN(dolar) ? null : dolar,
       idi: isNaN(idi) ? null : idi,
       idi_date: idiDate || null,
       updated_at: new Date().toISOString()
     };
+
     currentCache = { data: rates, timestamp: now };
     res.json({ ...rates, cached: false });
+
   } catch (err) {
     if (currentCache.data) return res.json({ ...currentCache.data, cached: true, stale: true });
     res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
@@ -76,7 +86,9 @@ async function findRateByDate(targetDate) {
     console.log('Cache hit: ' + targetDate);
     return dateCache[targetDate];
   }
+
   console.log('Buscando en BCV: ' + targetDate);
+
   for (let page = 0; page <= 35; page++) {
     try {
       const url = 'https://www.bcv.org.ve/estadisticas/indice-de-inversion?page=' + page;
@@ -85,12 +97,14 @@ async function findRateByDate(targetDate) {
       console.log('Status pag ' + page + ': ' + res.status);
       const html = await res.text();
       const $ = cheerio.load(html);
+
       const rows = [];
       $('tbody tr').each((i, el) => {
         const cells = $(el).find('td');
         const fecha = cells.eq(0).text().trim();
         const dolarCell = cells.eq(1).text().trim();
         const idiCell = cells.last().text().trim();
+
         if (fecha && fecha.match(/\d{2}-\d{2}-\d{4}/)) {
           rows.push({
             fecha,
@@ -99,24 +113,33 @@ async function findRateByDate(targetDate) {
           });
         }
       });
+
       console.log('Filas pag ' + page + ': ' + rows.length);
       if (rows.length === 0) break;
+
       rows.forEach(r => { dateCache[r.fecha] = r; });
+
       const match = rows.find(r => r.fecha === targetDate);
       if (match) { console.log('Encontrado!'); return match; }
+
       const lastRow = rows[rows.length - 1];
       if (lastRow) {
         const [dd, mm, yyyy] = lastRow.fecha.split('-');
         const [tdd, tmm, tyyyy] = targetDate.split('-');
         const lastDate = new Date(yyyy + '-' + mm + '-' + dd);
         const target = new Date(tyyyy + '-' + tmm + '-' + tdd);
-        if (target > lastDate && page > 0) { console.log('Fecha mas reciente que ultima fila, saliendo'); break; }
+        if (target > lastDate && page > 0) {
+          console.log('Fecha mas reciente que ultima fila, saliendo');
+          break;
+        }
       }
+
     } catch (err) {
       console.error('Error pag ' + page + ': ' + err.message);
       break;
     }
   }
+
   return null;
 }
 
@@ -127,6 +150,7 @@ app.get('/api/rates/history', async (req, res) => {
   const [dd, mm, yyyy] = from.split('-');
   const fecha = new Date(yyyy + '-' + mm + '-' + dd);
   const dia = fecha.getDay();
+
   if (dia === 0 || dia === 6) {
     return res.status(400).json({
       error: 'Sin tasa disponible',
