@@ -11,12 +11,21 @@ const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
 
 const DB_URL = process.env.DATABASE_PUBLIC_URL || 'postgresql://postgres:UThjYRVuLBTszXfgbvpJnjsSOiApHcsL@centerbeam.proxy.rlwy.net:10781/railway';
-console.log('DB URL:', DB_URL ? 'definida' : 'NO DEFINIDA');
+const pool = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
 
-const pool = new Pool({
-  connectionString: DB_URL,
-  ssl: { rejectUnauthorized: false }
-});
+const RECONVERSION_DATE = new Date('2021-10-04');
+
+function applyReconversion(fecha, dolar, idi) {
+  const [dd, mm, yyyy] = fecha.split('-');
+  const date = new Date(yyyy + '-' + mm + '-' + dd);
+  if (date < RECONVERSION_DATE) {
+    return {
+      dolar: dolar ? dolar / 1000000 : null,
+      idi: idi ? idi * 1000000 : null
+    };
+  }
+  return { dolar, idi };
+}
 
 async function initDB() {
   await pool.query(`
@@ -123,7 +132,8 @@ app.get('/api/rates/history', async (req, res) => {
     const cached = await getRateFromDB(from);
     if (cached) {
       console.log('DB hit: ' + from);
-      return res.json({ rows: [{ fecha: cached.fecha, dolar: parseFloat(cached.dolar), idi: parseFloat(cached.idi) }], from });
+      const converted = applyReconversion(from, parseFloat(cached.dolar), parseFloat(cached.idi));
+      return res.json({ rows: [{ fecha: cached.fecha, dolar: converted.dolar, idi: converted.idi }], from });
     }
 
     console.log('Buscando en BCV: ' + from);
@@ -155,13 +165,13 @@ app.get('/api/rates/history', async (req, res) => {
       });
 
       if (rows.length === 0) break;
-
-      for (const row of rows) {
-        await saveRateToDB(row);
-      }
+      for (const row of rows) await saveRateToDB(row);
 
       const match = rows.find(r => r.fecha === from);
-      if (match) return res.json({ rows: [match], from });
+      if (match) {
+        const converted = applyReconversion(from, match.dolar, match.idi);
+        return res.json({ rows: [{ fecha: match.fecha, dolar: converted.dolar, idi: converted.idi }], from });
+      }
 
       const last = rows[rows.length - 1];
       if (last) {
