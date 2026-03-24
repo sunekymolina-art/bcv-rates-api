@@ -21,7 +21,7 @@ function applyReconversion(fecha, dolar, idi) {
   if (date < RECONVERSION_DATE) {
     return {
       dolar: dolar ? dolar / 1000000 : null,
-      idi: idi ? idi * 1000000 : null
+      idi: idi
     };
   }
   return { dolar, idi };
