@@ -87,9 +87,11 @@ app.get('/api/rates', async (req, res) => {
     const idiHtml = await idiRes.text();
     const $bcv = cheerio.load(bcvHtml);
     const $idi = cheerio.load(idiHtml);
+    console.log('[DEBUG #dolar]', $bcv('#dolar').html());
     let dolar = null;
     const dolarText = $bcv('#dolar strong').first().text().trim();
     if (dolarText) dolar = parseFloat(dolarText.replace(/\./g, '').replace(',', '.'));
+    let dolarDate = null;
     let idi = null;
     let idiDate = null;
     const firstRow = $idi('tbody tr').first();
@@ -98,15 +100,36 @@ app.get('/api/rates', async (req, res) => {
       idiDate = cells.eq(0).text().trim();
       const idiText = cells.last().text().trim();
       if (idiText && idiText !== 'N/A') idi = parseFloat(idiText.replace(/\./g, '').replace(',', '.'));
-    }
-    const rates = {
-      dolar: isNaN(dolar) ? null : dolar,
+      // Calcular dolar_date comparando con tabla
+      const tablaDolaText = cells.eq(1).text().trim();
+      const tablaDolar = tablaDolaText && tablaDolaText !== 'N/A'
+        ? parseFloat(tablaDolaText.replace(/\./g, '').replace(',', '.'))
+        : null;
+      if (tablaDolar && dolar && Math.abs(dolar - tablaDolar) > 0.0001) {
+        const [dd, mm, yyyy] = idiDate.split('-');
+        const fecha = new Date(yyyy + '-' + mm + '-' + dd);
+        fecha.setDate(fecha.getDate() + 1);
+        while (fecha.getDay() === 0 || fecha.getDay() === 6) {
+          fecha.setDate(fecha.getDate() + 1);
+        }
+        const ndd = String(fecha.getDate()).padStart(2, '0');
+        const nmm = String(fecha.getMonth() + 1).padStart(2, '0');
+        const nyyyy = fecha.getFullYear();
+        dolarDate = `${ndd}-${nmm}-${nyyyy}`;
+      } else {
+        dolarDate = idiDate;
+      }
+    }   
+const rates = {
+  dolar: isNaN(dolar) ? null : dolar,
+  dolar_date: dolarDate,
       idi: isNaN(idi) ? null : idi,
       idi_date: idiDate || null,
       updated_at: new Date().toISOString()
     };
     currentCache = { data: rates, timestamp: now };
-    res.json({ ...rates, cached: false });
+    console.log('rates:', JSON.stringify(rates));
+res.json({ ...rates, cached: false });;
   } catch (err) {
     if (currentCache.data) return res.json({ ...currentCache.data, cached: true, stale: true });
     res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
