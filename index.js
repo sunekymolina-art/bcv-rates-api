@@ -247,6 +247,16 @@ async function scrapeEuroFromBCV() {
       const buffer = await fileRes.buffer();
       const workbook = XLSX.read(buffer, { type: 'buffer' });
 
+      console.log(`[Euro] XLS: ${link}`);
+      console.log(`[Euro] Pestañas (primeras 3):`, workbook.SheetNames.slice(0, 3));
+
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const firstRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: null });
+      console.log(`[Euro] Primera pestaña "${workbook.SheetNames[0]}" - primeras 5 filas (colB, colE):`);
+      firstRows.slice(0, 5).forEach((row, i) => {
+        console.log(`  fila ${i}: B=${JSON.stringify(row[1])}  E=${JSON.stringify(row[4])}`);
+      });
+
       for (const sheetName of workbook.SheetNames) {
         const m = sheetName.match(/^(\d{2})(\d{2})(\d{4})$/);
         if (!m) continue;
