@@ -324,6 +324,16 @@ app.get('/api/rates/euro', async (req, res) => {
   }
 });
 
+app.get('/api/rates/euro/status', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*), MIN(fecha), MAX(fecha) FROM tasas_euro');
+    const row = result.rows[0];
+    res.json({ fechas_en_db: parseInt(row.count), primera: row.min, ultima: row.max });
+  } catch (err) {
+    res.status(503).json({ error: 'Error consultando estado euro', detail: err.message });
+  }
+});
+
 app.get('/api/rates/euro/scrape', async (req, res) => {
   try {
     const saved = await scrapeEuroFromBCV();
