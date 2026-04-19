@@ -267,6 +267,8 @@ async function scrapeEuroFromBCV() {
       const arrayBuffer = await fileRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
       const workbook = XLSX.read(buffer, { type: 'buffer' });
+      let fileSaved = 0;
+      console.log(`[Euro] ${link} | ${workbook.SheetNames.length} pestañas`);
 
       for (const sheetName of workbook.SheetNames) {
         const sheet = workbook.Sheets[sheetName];
@@ -275,7 +277,10 @@ async function scrapeEuroFromBCV() {
         // Fecha en fila 4 (índice 4), columna índice 2: "Fecha Valor: DD/MM/YYYY"
         const fechaCell = rows[4] && rows[4][2] ? String(rows[4][2]) : '';
         const fechaMatch = fechaCell.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-        if (!fechaMatch) continue;
+        if (!fechaMatch) {
+          console.log(`[Euro]   pestaña "${sheetName}": sin fecha válida en fila 4`);
+          continue;
+        }
         const fecha = `${fechaMatch[1]}-${fechaMatch[2]}-${fechaMatch[3]}`;
 
         let euroValue = null;
@@ -297,9 +302,12 @@ async function scrapeEuroFromBCV() {
             [fecha, euroValue]
           );
           saved++;
-          console.log(`[Euro] Guardado: ${fecha} = ${euroValue}`);
+          fileSaved++;
+        } else {
+          console.log(`[Euro]   pestaña "${sheetName}" (${fecha}): EUR no encontrado o valor inválido`);
         }
       }
+      console.log(`[Euro]   → ${fileSaved}/${workbook.SheetNames.length} pestañas guardadas`);
     } catch (e) {
       console.error(`[Euro] Error en ${link}:`, e.message);
     }
