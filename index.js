@@ -224,21 +224,41 @@ app.get('/api/rates/history', async (req, res) => {
 
 async function scrapeEuroFromBCV() {
   const BASE = 'https://www.bcv.org.ve';
-  const pageUrl = BASE + '/estadisticas/tipo-cambio-de-referencia-smc';
-
-  const pageRes = await fetchWithTimeout(pageUrl, { headers: getHeaders(), agent }, 20000);
-  const html = await pageRes.text();
-  const $ = cheerio.load(html);
+  const BASE_URL = BASE + '/estadisticas/tipo-cambio-de-referencia-smc';
 
   const xlsLinks = [];
-  $('a[href]').each((i, el) => {
-    const href = $(el).attr('href');
-    if (href && /\.(xls|xlsx)$/i.test(href)) {
-      xlsLinks.push(href.startsWith('http') ? href : BASE + href);
-    }
-  });
+  const seen = new Set();
+  let page = 0;
+  let pagesWithLinks = 0;
 
-  console.log(`[Euro] ${xlsLinks.length} archivos XLS encontrados`);
+  while (true) {
+    const url = `${BASE_URL}?page=${page}`;
+    let html;
+    try {
+      const pageRes = await fetchWithTimeout(url, { headers: getHeaders(), agent }, 20000);
+      html = await pageRes.text();
+    } catch (e) {
+      console.error(`[Euro] Error cargando página ${page}:`, e.message);
+      break;
+    }
+
+    const $ = cheerio.load(html);
+    const found = [];
+    $('a[href]').each((i, el) => {
+      const href = $(el).attr('href');
+      if (href && /\.(xls|xlsx)$/i.test(href)) {
+        const full = href.startsWith('http') ? href : BASE + href;
+        if (!seen.has(full)) { seen.add(full); found.push(full); }
+      }
+    });
+
+    if (found.length === 0) break;
+    xlsLinks.push(...found);
+    pagesWithLinks++;
+    page++;
+  }
+
+  console.log(`[Euro] ${pagesWithLinks} páginas procesadas | ${xlsLinks.length} archivos XLS encontrados`);
 
   let saved = 0;
   for (const link of xlsLinks) {
