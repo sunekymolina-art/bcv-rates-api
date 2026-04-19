@@ -298,16 +298,16 @@ async function scrapeEuroFromBCV() {
         }
 
         let euroValue = null;
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          if (row && row[0] === 'EUR') {
-            const val = row[5];
+        for (const row of rows) {
+          if (!row || !row.some(c => c === 'EUR')) continue;
+          for (let i = row.length - 1; i >= 0; i--) {
+            const val = row[i];
             const parsed = typeof val === 'number'
               ? val
-              : parseFloat(String(val).replace(/\./g, '').replace(',', '.'));
-            if (!isNaN(parsed) && parsed > 0) euroValue = parsed;
-            break;
+              : (typeof val === 'string' ? parseFloat(val.replace(/\./g, '').replace(',', '.')) : NaN);
+            if (!isNaN(parsed) && parsed > 0) { euroValue = parsed; break; }
           }
+          break;
         }
 
         if (euroValue !== null) {
