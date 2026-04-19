@@ -246,43 +246,39 @@ async function scrapeEuroFromBCV() {
       const fileRes = await fetchWithTimeout(link, { headers: { ...getHeaders(), 'Accept': 'application/octet-stream,application/vnd.ms-excel,*/*' }, agent }, 30000);
       const arrayBuffer = await fileRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const first4 = buffer.slice(0, 4).toString('hex').toUpperCase().match(/../g).join(' ');
-      console.log(`[Euro] XLS: ${link}`);
-      console.log(`[Euro] Tamaño: ${buffer.length} bytes | Primeros 4 bytes: ${first4}`);
       const workbook = XLSX.read(buffer, { type: 'buffer' });
-      console.log(`[Euro] Pestañas (primeras 3):`, workbook.SheetNames.slice(0, 3));
-
-      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-      const firstRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: null });
-      console.log(`[Euro] Primera pestaña "${workbook.SheetNames[0]}" - primeras 5 filas completas:`);
-      firstRows.slice(0, 5).forEach((row, i) => {
-        console.log(`  fila ${i}:`, JSON.stringify(row));
-      });
 
       for (const sheetName of workbook.SheetNames) {
-        const m = sheetName.match(/^(\d{2})(\d{2})(\d{4})$/);
-        if (!m) continue;
-        const fecha = `${m[1]}-${m[2]}-${m[3]}`;
-
         const sheet = workbook.Sheets[sheetName];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
 
-        for (const row of rows) {
-          const colB = row[1];
-          const colE = row[4];
-          if (typeof colB === 'string' && colB.trim().toUpperCase() === 'EUR') {
-            const euro = typeof colE === 'number'
-              ? colE
-              : parseFloat(String(colE).replace(/\./g, '').replace(',', '.'));
-            if (!isNaN(euro) && euro > 0) {
-              await pool.query(
-                'INSERT INTO tasas_euro (fecha, euro) VALUES ($1, $2) ON CONFLICT (fecha) DO NOTHING',
-                [fecha, euro]
-              );
-              saved++;
-            }
+        // Fecha en fila 4 (índice 4), columna índice 2: "Fecha Valor: DD/MM/YYYY"
+        const fechaCell = rows[4] && rows[4][2] ? String(rows[4][2]) : '';
+        const fechaMatch = fechaCell.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        if (!fechaMatch) continue;
+        const fecha = `${fechaMatch[1]}-${fechaMatch[2]}-${fechaMatch[3]}`;
+
+        // Monedas desde fila índice 10, EUR en índice 1, valor venta en índice 4
+        let euroValue = null;
+        for (let i = 10; i < rows.length; i++) {
+          const row = rows[i];
+          if (row && typeof row[1] === 'string' && row[1].trim() === 'EUR') {
+            const val = row[4];
+            const parsed = typeof val === 'number'
+              ? val
+              : parseFloat(String(val).replace(/\./g, '').replace(',', '.'));
+            if (!isNaN(parsed) && parsed > 0) euroValue = parsed;
             break;
           }
+        }
+
+        if (euroValue !== null) {
+          await pool.query(
+            'INSERT INTO tasas_euro (fecha, euro) VALUES ($1, $2) ON CONFLICT (fecha) DO NOTHING',
+            [fecha, euroValue]
+          );
+          saved++;
+          console.log(`[Euro] Guardado: ${fecha} = ${euroValue}`);
         }
       }
     } catch (e) {
