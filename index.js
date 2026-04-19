@@ -254,9 +254,9 @@ async function scrapeEuroFromBCV() {
 
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const firstRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: null });
-      console.log(`[Euro] Primera pestaña "${workbook.SheetNames[0]}" - primeras 5 filas (colB, colE):`);
+      console.log(`[Euro] Primera pestaña "${workbook.SheetNames[0]}" - primeras 5 filas completas:`);
       firstRows.slice(0, 5).forEach((row, i) => {
-        console.log(`  fila ${i}: B=${JSON.stringify(row[1])}  E=${JSON.stringify(row[4])}`);
+        console.log(`  fila ${i}:`, JSON.stringify(row));
       });
 
       for (const sheetName of workbook.SheetNames) {
