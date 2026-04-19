@@ -268,6 +268,7 @@ async function scrapeEuroFromBCV() {
       const buffer = Buffer.from(arrayBuffer);
       const workbook = XLSX.read(buffer, { type: 'buffer' });
       let fileSaved = 0;
+      let loggedFailSheet = false;
       console.log(`[Euro] ${link} | ${workbook.SheetNames.length} pestañas`);
 
       for (const sheetName of workbook.SheetNames) {
@@ -318,6 +319,11 @@ async function scrapeEuroFromBCV() {
           fileSaved++;
         } else {
           console.log(`[Euro]   pestaña "${sheetName}" (${fecha}): EUR no encontrado o valor inválido`);
+          if (link.includes('2_1_2b20_smc') && !loggedFailSheet) {
+            loggedFailSheet = true;
+            console.log(`[Euro DEBUG] Primeras 15 filas de "${sheetName}":`);
+            rows.slice(0, 15).forEach((row, i) => console.log(`  [${i}]:`, JSON.stringify(row)));
+          }
         }
       }
       console.log(`[Euro]   → ${fileSaved}/${workbook.SheetNames.length} pestañas guardadas`);
