@@ -243,11 +243,13 @@ async function scrapeEuroFromBCV() {
   let saved = 0;
   for (const link of xlsLinks) {
     try {
-      const fileRes = await fetchWithTimeout(link, { headers: getHeaders(), agent }, 30000);
-      const buffer = await fileRes.buffer();
-      const workbook = XLSX.read(buffer, { type: 'buffer' });
-
+      const fileRes = await fetchWithTimeout(link, { headers: { ...getHeaders(), 'Accept': 'application/octet-stream,application/vnd.ms-excel,*/*' }, agent }, 30000);
+      const arrayBuffer = await fileRes.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const first4 = buffer.slice(0, 4).toString('hex').toUpperCase().match(/../g).join(' ');
       console.log(`[Euro] XLS: ${link}`);
+      console.log(`[Euro] Tamaño: ${buffer.length} bytes | Primeros 4 bytes: ${first4}`);
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
       console.log(`[Euro] Pestañas (primeras 3):`, workbook.SheetNames.slice(0, 3));
 
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
