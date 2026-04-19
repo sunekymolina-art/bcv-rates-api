@@ -274,14 +274,27 @@ async function scrapeEuroFromBCV() {
         const sheet = workbook.Sheets[sheetName];
         const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
 
-        // Fecha en fila 4 (índice 4), columna índice 2: "Fecha Valor: DD/MM/YYYY"
-        const fechaCell = rows[4] && rows[4][2] ? String(rows[4][2]) : '';
-        const fechaMatch = fechaCell.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-        if (!fechaMatch) {
-          console.log(`[Euro]   pestaña "${sheetName}": sin fecha válida en fila 4`);
+        // Buscar "Fecha Valor: DD/MM/YYYY" en cualquier fila
+        let fecha = null;
+        for (const row of rows) {
+          if (!row) continue;
+          for (const cell of row) {
+            if (typeof cell === 'string' && cell.includes('Fecha Valor:')) {
+              const m = cell.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+              if (m) { fecha = `${m[1]}-${m[2]}-${m[3]}`; break; }
+            }
+          }
+          if (fecha) break;
+        }
+        // Fallback: nombre de pestaña en formato DDMMYYYY
+        if (!fecha) {
+          const m = sheetName.match(/^(\d{2})(\d{2})(\d{4})$/);
+          if (m) fecha = `${m[1]}-${m[2]}-${m[3]}`;
+        }
+        if (!fecha) {
+          console.log(`[Euro]   pestaña "${sheetName}": no se pudo determinar fecha`);
           continue;
         }
-        const fecha = `${fechaMatch[1]}-${fechaMatch[2]}-${fechaMatch[3]}`;
 
         let euroValue = null;
         for (let i = 0; i < rows.length; i++) {
