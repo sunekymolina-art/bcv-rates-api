@@ -126,17 +126,24 @@ app.get('/api/rates', async (req, res) => {
       } else {
         dolarDate = idiDate;
       }
-    }   
-const rates = {
-  dolar: isNaN(dolar) ? null : dolar,
-  dolar_date: dolarDate,
+    }
+    const euroRow = await pool.query(`
+      SELECT fecha, euro FROM tasas_euro
+      ORDER BY TO_DATE(fecha, 'DD-MM-YYYY') DESC LIMIT 1
+    `);
+    const euroLatest = euroRow.rows[0] || null;
+    const rates = {
+      dolar: isNaN(dolar) ? null : dolar,
+      dolar_date: dolarDate,
       idi: isNaN(idi) ? null : idi,
       idi_date: idiDate || null,
+      euro: euroLatest ? parseFloat(euroLatest.euro) : null,
+      euro_date: euroLatest ? euroLatest.fecha : null,
       updated_at: new Date().toISOString()
     };
     currentCache = { data: rates, timestamp: now };
     console.log('rates:', JSON.stringify(rates));
-res.json({ ...rates, cached: false });;
+    res.json({ ...rates, cached: false });
   } catch (err) {
     if (currentCache.data) return res.json({ ...currentCache.data, cached: true, stale: true });
     res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
@@ -163,7 +170,9 @@ app.get('/api/rates/history', async (req, res) => {
     if (cached) {
       console.log('DB hit: ' + from);
       const converted = applyReconversion(from, parseFloat(cached.dolar), parseFloat(cached.idi));
-      return res.json({ rows: [{ fecha: cached.fecha, dolar: converted.dolar, idi: converted.idi }], from });
+      const euroRes = await pool.query('SELECT euro FROM tasas_euro WHERE fecha = $1', [from]);
+      const euro = euroRes.rows[0] ? parseFloat(euroRes.rows[0].euro) : null;
+      return res.json({ rows: [{ fecha: cached.fecha, dolar: converted.dolar, idi: converted.idi, euro }], from });
     }
 
     console.log('Buscando en BCV: ' + from);
@@ -200,7 +209,9 @@ app.get('/api/rates/history', async (req, res) => {
       const match = rows.find(r => r.fecha === from);
       if (match) {
         const converted = applyReconversion(from, match.dolar, match.idi);
-        return res.json({ rows: [{ fecha: match.fecha, dolar: converted.dolar, idi: converted.idi }], from });
+        const euroRes = await pool.query('SELECT euro FROM tasas_euro WHERE fecha = $1', [from]);
+        const euro = euroRes.rows[0] ? parseFloat(euroRes.rows[0].euro) : null;
+        return res.json({ rows: [{ fecha: match.fecha, dolar: converted.dolar, idi: converted.idi, euro }], from });
       }
 
       const last = rows[rows.length - 1];
