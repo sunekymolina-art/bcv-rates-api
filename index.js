@@ -3,6 +3,7 @@ const fetch = require('node-fetch');
 const cheerio = require('cheerio');
 const https = require('https');
 const { Pool } = require('pg');
+const XLSX = require('xlsx');
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
@@ -33,6 +34,12 @@ async function initDB() {
       fecha VARCHAR(10) PRIMARY KEY,
       dolar NUMERIC,
       idi NUMERIC
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS tasas_euro (
+      fecha VARCHAR(10) PRIMARY KEY,
+      euro NUMERIC
     )
   `);
   console.log('Base de datos lista');
@@ -212,6 +219,90 @@ app.get('/api/rates/history', async (req, res) => {
   } catch (err) {
     console.error('Error:', err.message);
     res.status(503).json({ error: 'Error buscando tasa', detail: err.message });
+  }
+});
+
+async function scrapeEuroFromBCV() {
+  const BASE = 'https://www.bcv.org.ve';
+  const pageUrl = BASE + '/estadisticas/tipo-cambio-de-referencia-smc';
+
+  const pageRes = await fetchWithTimeout(pageUrl, { headers: getHeaders(), agent }, 20000);
+  const html = await pageRes.text();
+  const $ = cheerio.load(html);
+
+  const xlsLinks = [];
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href');
+    if (href && /\.(xls|xlsx)$/i.test(href)) {
+      xlsLinks.push(href.startsWith('http') ? href : BASE + href);
+    }
+  });
+
+  console.log(`[Euro] ${xlsLinks.length} archivos XLS encontrados`);
+
+  let saved = 0;
+  for (const link of xlsLinks) {
+    try {
+      const fileRes = await fetchWithTimeout(link, { headers: getHeaders(), agent }, 30000);
+      const buffer = await fileRes.buffer();
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+
+      for (const sheetName of workbook.SheetNames) {
+        const m = sheetName.match(/^(\d{2})(\d{2})(\d{4})$/);
+        if (!m) continue;
+        const fecha = `${m[1]}-${m[2]}-${m[3]}`;
+
+        const sheet = workbook.Sheets[sheetName];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+
+        for (const row of rows) {
+          const colB = row[1];
+          const colE = row[4];
+          if (typeof colB === 'string' && colB.trim().toUpperCase() === 'EUR') {
+            const euro = typeof colE === 'number'
+              ? colE
+              : parseFloat(String(colE).replace(/\./g, '').replace(',', '.'));
+            if (!isNaN(euro) && euro > 0) {
+              await pool.query(
+                'INSERT INTO tasas_euro (fecha, euro) VALUES ($1, $2) ON CONFLICT (fecha) DO NOTHING',
+                [fecha, euro]
+              );
+              saved++;
+            }
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[Euro] Error en ${link}:`, e.message);
+    }
+  }
+
+  console.log(`[Euro] ${saved} filas guardadas`);
+  return saved;
+}
+
+app.get('/api/rates/euro', async (req, res) => {
+  const { date } = req.query;
+  if (!date) return res.status(400).json({ error: 'Se requiere date en formato DD-MM-YYYY' });
+
+  try {
+    const result = await pool.query('SELECT * FROM tasas_euro WHERE fecha = $1', [date]);
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'No se encontró tasa de euro para esa fecha', date });
+    }
+    res.json({ fecha: result.rows[0].fecha, euro: parseFloat(result.rows[0].euro) });
+  } catch (err) {
+    res.status(503).json({ error: 'Error consultando euro', detail: err.message });
+  }
+});
+
+app.get('/api/rates/euro/scrape', async (req, res) => {
+  try {
+    const saved = await scrapeEuroFromBCV();
+    res.json({ ok: true, saved });
+  } catch (err) {
+    res.status(503).json({ error: 'Error scrapeando euro', detail: err.message });
   }
 });
 
