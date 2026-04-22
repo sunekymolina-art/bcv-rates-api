@@ -381,7 +381,9 @@ app.get('/api/rates/euro/status', async (req, res) => {
 app.get('/api/rates/euro/scrape', async (req, res) => {
   try {
     const saved = await scrapeEuroFromBCV();
-    res.json({ ok: true, saved });
+    const r = await pool.query(`SELECT TO_CHAR(MAX(TO_DATE(fecha, 'DD-MM-YYYY')), 'DD-MM-YYYY') AS ultima FROM tasas_euro`);
+    const fecha = r.rows[0]?.ultima ?? '';
+    res.json({ ok: true, saved, fecha });
   } catch (err) {
     res.status(503).json({ error: 'Error scrapeando euro', detail: err.message });
   }
