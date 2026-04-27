@@ -233,43 +233,64 @@ app.get('/api/rates/history', async (req, res) => {
   }
 });
 
-async function scrapeEuroFromBCV() {
+async function scrapeEuroFromBCV(fullScrape = false) {
   const BASE = 'https://www.bcv.org.ve';
   const BASE_URL = BASE + '/estadisticas/tipo-cambio-de-referencia-smc';
 
-  const xlsLinks = [];
-  const seen = new Set();
-  let page = 0;
-  let pagesWithLinks = 0;
+  let xlsLinks = [];
 
-  while (true) {
-    const url = `${BASE_URL}?page=${page}`;
+  if (!fullScrape) {
     let html;
     try {
-      const pageRes = await fetchWithTimeout(url, { headers: getHeaders(), agent }, 20000);
-      html = await pageRes.text();
+      const r = await fetchWithTimeout(`${BASE_URL}?page=0`, { headers: getHeaders(), agent }, 20000);
+      html = await r.text();
     } catch (e) {
-      console.error(`[Euro] Error cargando página ${page}:`, e.message);
-      break;
+      console.error('[Euro] Error cargando página 0:', e.message);
+      return 0;
     }
-
     const $ = cheerio.load(html);
-    const found = [];
     $('a[href]').each((i, el) => {
+      if (xlsLinks.length) return false;
       const href = $(el).attr('href');
       if (href && /\.(xls|xlsx)$/i.test(href)) {
-        const full = href.startsWith('http') ? href : BASE + href;
-        if (!seen.has(full)) { seen.add(full); found.push(full); }
+        xlsLinks.push(href.startsWith('http') ? href : BASE + href);
       }
     });
-
-    if (found.length === 0) break;
-    xlsLinks.push(...found);
-    pagesWithLinks++;
-    page++;
+    if (!xlsLinks.length) {
+      console.log('[Euro] No se encontró ningún XLS en la página 0');
+      return 0;
+    }
+    console.log(`[Euro] Modo rápido | 1 archivo: ${xlsLinks[0]}`);
+  } else {
+    const seen = new Set();
+    let page = 0;
+    let pagesWithLinks = 0;
+    while (true) {
+      const url = `${BASE_URL}?page=${page}`;
+      let html;
+      try {
+        const r = await fetchWithTimeout(url, { headers: getHeaders(), agent }, 20000);
+        html = await r.text();
+      } catch (e) {
+        console.error(`[Euro] Error cargando página ${page}:`, e.message);
+        break;
+      }
+      const $ = cheerio.load(html);
+      const found = [];
+      $('a[href]').each((i, el) => {
+        const href = $(el).attr('href');
+        if (href && /\.(xls|xlsx)$/i.test(href)) {
+          const full = href.startsWith('http') ? href : BASE + href;
+          if (!seen.has(full)) { seen.add(full); found.push(full); }
+        }
+      });
+      if (found.length === 0) break;
+      xlsLinks.push(...found);
+      pagesWithLinks++;
+      page++;
+    }
+    console.log(`[Euro] ${pagesWithLinks} páginas procesadas | ${xlsLinks.length} archivos XLS encontrados`);
   }
-
-  console.log(`[Euro] ${pagesWithLinks} páginas procesadas | ${xlsLinks.length} archivos XLS encontrados`);
 
   let saved = 0;
   for (const link of xlsLinks) {
@@ -380,7 +401,8 @@ app.get('/api/rates/euro/status', async (req, res) => {
 
 app.get('/api/rates/euro/scrape', async (req, res) => {
   try {
-    const saved = await scrapeEuroFromBCV();
+    const fullScrape = req.query.full === 'true';
+    const saved = await scrapeEuroFromBCV(fullScrape);
     const r = await pool.query(`SELECT TO_CHAR(MAX(TO_DATE(fecha, 'DD-MM-YYYY')), 'DD-MM-YYYY') AS ultima FROM tasas_euro`);
     const fecha = r.rows[0]?.ultima ?? '';
     res.json({ ok: true, saved, fecha });
