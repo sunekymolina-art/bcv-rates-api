@@ -90,6 +90,7 @@ app.post('/api/auth/login', async (req, res) => {
     });
     const data = await response.json();
     if (!response.ok || !data.access_token) {
+      console.log('[Auth0 error]', response.status, JSON.stringify(data));
       return res.status(401).json({ error: 'Credenciales incorrectas' });
     }
     return res.json({ token: data.access_token, email });
