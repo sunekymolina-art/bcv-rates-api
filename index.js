@@ -4,6 +4,8 @@ const cheerio = require('cheerio');
 const https = require('https');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
+const jwt = require('jsonwebtoken');
+const jwksClient = require('jwks-rsa');
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
@@ -17,6 +19,36 @@ const pool = new Pool({
   connectionString: DB_URL,
   ssl: DB_URL && DB_URL.includes('railway') ? { rejectUnauthorized: false } : DB_URL ? { rejectUnauthorized: false } : false
 });
+
+const jwks = jwksClient({
+  jwksUri: 'https://dev-z88basn0fhauwxqg.us.auth0.com/.well-known/jwks.json'
+});
+
+function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+  const token = authHeader.slice(7);
+  jwt.verify(
+    token,
+    (header, callback) => {
+      jwks.getSigningKey(header.kid, (err, key) => {
+        if (err) return callback(err);
+        callback(null, key.publicKey || key.rsaPublicKey);
+      });
+    },
+    {
+      audience: 'https://dev-z88basn0fhauwxqg.us.auth0.com/api/v2/',
+      issuer: 'https://dev-z88basn0fhauwxqg.us.auth0.com/',
+      algorithms: ['RS256']
+    },
+    (err) => {
+      if (err) return res.status(401).json({ error: 'No autorizado' });
+      next();
+    }
+  );
+}
 
 const RECONVERSION_DATE = new Date('2021-10-04');
 
@@ -116,7 +148,7 @@ app.get('/', async (req, res) => {
   res.json({ status: 'ok', fechas_en_db: parseInt(result.rows[0].count) });
 });
 
-app.get('/api/rates', async (req, res) => {
+app.get('/api/rates', requireAuth, async (req, res) => {
   const now = Date.now();
 
   // Euro: siempre fresco desde DB (no entra en caché)
@@ -198,7 +230,7 @@ app.get('/api/rates', async (req, res) => {
   }
 });
 
-app.get('/api/rates/history', async (req, res) => {
+app.get('/api/rates/history', requireAuth, async (req, res) => {
   const { from } = req.query;
   if (!from) return res.status(400).json({ error: 'Se requiere from en formato DD-MM-YYYY' });
 
@@ -416,7 +448,7 @@ async function scrapeEuroFromBCV(fullScrape = false) {
   return saved;
 }
 
-app.get('/api/rates/euro', async (req, res) => {
+app.get('/api/rates/euro', requireAuth, async (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: 'Se requiere date en formato DD-MM-YYYY' });
 
@@ -431,7 +463,7 @@ app.get('/api/rates/euro', async (req, res) => {
   }
 });
 
-app.get('/api/rates/euro/status', async (req, res) => {
+app.get('/api/rates/euro/status', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -447,7 +479,7 @@ app.get('/api/rates/euro/status', async (req, res) => {
   }
 });
 
-app.get('/api/rates/euro/scrape', async (req, res) => {
+app.get('/api/rates/euro/scrape', requireAuth, async (req, res) => {
   try {
     const fullScrape = req.query.full === 'true';
     const saved = await scrapeEuroFromBCV(fullScrape);
@@ -459,7 +491,7 @@ app.get('/api/rates/euro/scrape', async (req, res) => {
   }
 });
 
-app.get('/api/cache/status', async (req, res) => {
+app.get('/api/cache/status', requireAuth, async (req, res) => {
   const result = await pool.query('SELECT COUNT(*), MIN(fecha), MAX(fecha) FROM tasas');
   const row = result.rows[0];
   res.json({ fechas_en_db: parseInt(row.count), primera: row.min, ultima: row.max });
