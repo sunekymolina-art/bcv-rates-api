@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
 
-const DB_URL = process.env.DATABASE_PUBLIC_URL;
+const DB_URL = process.env.DATABASE_PUBLIC_URL || 'postgresql://postgres:qNhCdfOAYrwzRjMCGudMcIymIjDcVhly@crossover.proxy.rlwy.net:22387/railway';
 const pool = new Pool({ 
   connectionString: DB_URL,
   ssl: DB_URL && DB_URL.includes('railway') ? { rejectUnauthorized: false } : DB_URL ? { rejectUnauthorized: false } : false
