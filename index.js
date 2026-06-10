@@ -111,37 +111,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-app.use(express.json());
-
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email y password son requeridos' });
-  }
-  try {
-    const response = await fetch('https://dev-z88basn0fhauwxqg.us.auth0.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        grant_type: 'password',
-        username: email,
-        password,
-        client_id: 'IDrhQw5u9TkvGus2NxuA9ywB6k1ny8Ug',
-        client_secret: 'wzHf6J4qHnJNlkFPEgxNHfHZwprRzLLyVJxL5Cxc_39Sd_KmHxTKOcPis3wbdoyD',
-        audience: 'https://dev-z88basn0fhauwxqg.us.auth0.com/api/v2/'
-      })
-    });
-    const data = await response.json();
-    if (!response.ok || !data.access_token) {
-      console.log('[Auth0 error]', response.status, JSON.stringify(data));
-      return res.status(401).json({ error: 'Credenciales incorrectas' });
-    }
-    return res.json({ token: data.access_token, email });
-  } catch (err) {
-    return res.status(503).json({ error: 'Error de autenticación', detail: err.message });
-  }
-});
-
 app.get('/', async (req, res) => {
   const result = await pool.query('SELECT COUNT(*) FROM tasas');
   res.json({ status: 'ok', fechas_en_db: parseInt(result.rows[0].count) });
@@ -149,9 +118,27 @@ app.get('/', async (req, res) => {
 
 app.get('/api/rates', async (req, res) => {
   const now = Date.now();
-  if (currentCache.data && (now - currentCache.timestamp) < CACHE_TTL) {
-    return res.json({ ...currentCache.data, cached: true });
+
+  // Euro: siempre fresco desde DB (no entra en caché)
+  let euro = null;
+  let euro_date = null;
+  try {
+    const euroRow = await pool.query(`
+      SELECT fecha, euro FROM tasas_euro
+      ORDER BY TO_DATE(fecha, 'DD-MM-YYYY') DESC LIMIT 1
+    `);
+    const euroLatest = euroRow.rows[0] || null;
+    euro = euroLatest ? parseFloat(euroLatest.euro) : null;
+    euro_date = euroLatest ? euroLatest.fecha : null;
+  } catch (err) {
+    console.error('[Euro] Error consultando tasas_euro:', err.message);
   }
+
+  // Dólar + IDI: caché de 1 hora (requieren scraping)
+  if (currentCache.data && (now - currentCache.timestamp) < CACHE_TTL) {
+    return res.json({ ...currentCache.data, euro, euro_date, cached: true });
+  }
+
   try {
     const [bcvRes, idiRes] = await Promise.all([
       fetchWithTimeout('https://www.bcv.org.ve/', { headers: getHeaders(), agent }),
@@ -194,25 +181,19 @@ app.get('/api/rates', async (req, res) => {
         dolarDate = idiDate;
       }
     }
-    const euroRow = await pool.query(`
-      SELECT fecha, euro FROM tasas_euro
-      ORDER BY TO_DATE(fecha, 'DD-MM-YYYY') DESC LIMIT 1
-    `);
-    const euroLatest = euroRow.rows[0] || null;
+    // Solo dólar + IDI en caché; euro se obtiene fresco en cada request
     const rates = {
       dolar: isNaN(dolar) ? null : dolar,
       dolar_date: dolarDate,
       idi: isNaN(idi) ? null : idi,
       idi_date: idiDate || null,
-      euro: euroLatest ? parseFloat(euroLatest.euro) : null,
-      euro_date: euroLatest ? euroLatest.fecha : null,
       updated_at: new Date().toISOString()
     };
     currentCache = { data: rates, timestamp: now };
-    console.log('rates:', JSON.stringify(rates));
-    res.json({ ...rates, cached: false });
+    console.log('rates:', JSON.stringify({ ...rates, euro, euro_date }));
+    res.json({ ...rates, euro, euro_date, cached: false });
   } catch (err) {
-    if (currentCache.data) return res.json({ ...currentCache.data, cached: true, stale: true });
+    if (currentCache.data) return res.json({ ...currentCache.data, euro, euro_date, cached: true, stale: true });
     res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
   }
 });
