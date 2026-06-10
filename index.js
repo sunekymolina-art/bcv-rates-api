@@ -71,6 +71,35 @@ app.use((req, res, next) => {
   next();
 });
 
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email y password son requeridos' });
+  }
+  try {
+    const response = await fetch('https://dev-z88basn0fhauwxqg.us.auth0.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'password',
+        username: email,
+        password,
+        client_id: process.env.AUTH0_CLIENT_ID,
+        client_secret: process.env.AUTH0_CLIENT_SECRET,
+        audience: 'https://dev-z88basn0fhauwxqg.us.auth0.com/api/v2/'
+      })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.access_token) {
+      console.log('[Auth0 error]', response.status, JSON.stringify(data));
+      return res.status(401).json({ error: 'Credenciales incorrectas' });
+    }
+    return res.json({ token: data.access_token, email });
+  } catch (err) {
+    return res.status(503).json({ error: 'Error de autenticación', detail: err.message });
+  }
+});
+
 app.use(express.json());
 
 app.post('/api/auth/login', async (req, res) => {
