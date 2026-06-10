@@ -7,6 +7,7 @@ const XLSX = require('xlsx');
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
