@@ -479,7 +479,7 @@ app.get('/api/rates/euro/status', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/api/rates/euro/scrape', requireAuth, async (req, res) => {
+app.get('/api/rates/euro/scrape', async (req, res) => {
   try {
     const fullScrape = req.query.full === 'true';
     const saved = await scrapeEuroFromBCV(fullScrape);
