@@ -44,7 +44,6 @@ cron-job.org llama a /api/rates/euro/scrape (producción) dos veces por día, ti
 - 20:00 UTC (4:00 PM Venezuela).
 - 23:00 UTC (7:00 PM Venezuela): respaldo, porque el BCV a veces publica hasta las 6:30 PM.
 La base ignora las fechas repetidas, así que correrlo dos veces no duplica datos.
-Puede quedar un job viejo de keep-alive apuntando a Render que ya no hace falta.
 
 ## Pendientes
 - Activar alerta por email ante fallas en los cronjobs (el job se había desactivado sin avisar).
