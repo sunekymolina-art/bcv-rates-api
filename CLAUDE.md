@@ -15,6 +15,22 @@ Entorno: Mac con zsh.
 Cada ambiente de Railway (producción y development) necesita sus propias:
 DATABASE_PUBLIC_URL, AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET.
 Auth0 tenant: dev-z88basn0fhauwxqg.us.auth0.com
+- AUTH0_CLIENT_ID es la MISMA app de Auth0 en ambos ambientes: al rotar el secret hay que actualizar los dos.
+- DATABASE_PUBLIC_URL del backend: en development es referencia `${{Postgres.DATABASE_PUBLIC_URL}}`;
+  en production es texto fijo (la referencia quedaba vacía) y hay que copiarla a mano desde Postgres.
+- Sin DATABASE_PUBLIC_URL el servidor no arranca (no hay URL de respaldo en el código).
+
+## Rotación de secretos (procedimiento)
+Contraseña de Postgres (por ambiente; hacer development primero):
+1. Generar la contraseña en la Terminal de la Mac (`openssl rand -hex 24`), nunca en el chat.
+2. Postgres -> Console: `psql -U postgres`, luego `\password postgres`, luego `\q`.
+3. Postgres -> Variables: editar SOLO `POSTGRES_PASSWORD` y hacer Deploy. Las variables con `${{...}}` se actualizan solas.
+   `DATABASE_PUBLIC_URL` de Postgres debe ser:
+   `postgresql://${{PGUSER}}:${{POSTGRES_PASSWORD}}@${{RAILWAY_TCP_PROXY_DOMAIN}}:${{RAILWAY_TCP_PROXY_PORT}}/${{PGDATABASE}}`
+4. Backend: en production, copiar la URL nueva de Postgres a `DATABASE_PUBLIC_URL` y hacer Deploy. Verificar "Base de datos lista" en los logs.
+En production hay corte entre los pasos 2 y 4: hacerlos seguidos y fuera de los horarios del cron.
+Client secret de Auth0: Applications -> la app -> Settings -> "Rotar secreto" (Girar). Actualizar
+AUTH0_CLIENT_SECRET en los dos ambientes y hacer Deploy. Solo se cortan los logins nuevos; los tokens existentes siguen válidos.
 
 ## Base de datos por ambiente
 - Producción y development tienen cada uno su propio Postgres.
@@ -47,8 +63,6 @@ La base ignora las fechas repetidas, así que correrlo dos veces no duplica dato
 
 ## Pendientes
 - Activar alerta por email ante fallas en los cronjobs (el job se había desactivado sin avisar).
-- Rotar secretos: client secret de Auth0 y contraseñas de las bases (producción y development).
-- Limpiar el historial de git de los secretos que quedaron en commits viejos.
-- Quitar la URL de base de datos hardcodeada del código.
-- Restringir CORS (hoy `*`) solo a los dominios de Vercel.
-- Agregar rate limiting y validación de inputs.
+- Limpiar el historial de git de los secretos viejos (ya rotados el 12-11-2026: no es urgente, es prolijidad).
+- xlsx tiene vulnerabilidades sin arreglo en npm: instalarlo desde SheetJS y probar el scraper del euro.
+- Opcional: conectar el backend a Postgres por red privada (DATABASE_URL) para evitar costos de egress.
