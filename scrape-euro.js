@@ -8,7 +8,11 @@ const XLSX = require('xlsx');
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-const DB_URL = process.env.DATABASE_PUBLIC_URL || 'postgresql://postgres:UThjYRVuLBTszXfgbvpJnjsSOiApHcsL@centerbeam.proxy.rlwy.net:10781/railway';
+const DB_URL = process.env.DATABASE_PUBLIC_URL;
+if (!DB_URL) {
+  console.error('[Config] Falta la variable de entorno DATABASE_PUBLIC_URL. El script no puede ejecutarse.');
+  process.exit(1);
+}
 const pool = new Pool({ connectionString: DB_URL, ssl: { rejectUnauthorized: false } });
 
 const getHeaders = () => ({

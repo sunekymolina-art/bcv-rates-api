@@ -6,19 +6,41 @@ const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const jwt = require('jsonwebtoken');
 const jwksClient = require('jwks-rsa');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
+const DB_URL = process.env.DATABASE_PUBLIC_URL;
+if (!DB_URL) {
+  console.error('[Config] Falta la variable de entorno DATABASE_PUBLIC_URL. El servidor no puede arrancar.');
+  process.exit(1);
+}
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const app = express();
+app.set('trust proxy', 1); // detrás del proxy de Railway
+app.use(helmet());
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const CACHE_TTL = 60 * 60 * 1000;
 let currentCache = { data: null, timestamp: 0 };
 
-const DB_URL = process.env.DATABASE_PUBLIC_URL || 'postgresql://postgres:qNhCdfOAYrwzRjMCGudMcIymIjDcVhly@crossover.proxy.rlwy.net:22387/railway';
-const pool = new Pool({ 
+const pool = new Pool({
   connectionString: DB_URL,
-  ssl: DB_URL && DB_URL.includes('railway') ? { rejectUnauthorized: false } : DB_URL ? { rejectUnauthorized: false } : false
+  ssl: { rejectUnauthorized: false }
 });
+
+// --- Validación de inputs ---
+// Fecha DD-MM-YYYY que además sea una fecha real (rechaza 31-02-2024, 00-13-2024, etc.)
+function isValidDate(str) {
+  if (typeof str !== 'string' || !/^\d{2}-\d{2}-\d{4}$/.test(str)) return false;
+  const [dd, mm, yyyy] = str.split('-').map(Number);
+  const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+  return d.getUTCFullYear() === yyyy && d.getUTCMonth() === mm - 1 && d.getUTCDate() === dd;
+}
+
+function isValidString(value, min, max) {
+  return typeof value === 'string' && value.length >= min && value.length <= max;
+}
 
 const jwks = jwksClient({
   jwksUri: 'https://dev-z88basn0fhauwxqg.us.auth0.com/.well-known/jwks.json'
@@ -106,18 +128,50 @@ function fetchWithTimeout(url, options, ms = 12000) {
     .finally(() => clearTimeout(timer));
 }
 
+const ALLOWED_ORIGINS = [
+  'https://calculadora-bcv-two.vercel.app',
+  'https://calculadora-bcv-git-dev-sunekymolina-arts-projects.vercel.app'
+];
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  const origin = req.headers.origin;
+  res.header('Vary', 'Origin');
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(200);
   next();
 });
 
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
+// --- Rate limiting ---
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Probá de nuevo en 15 minutos.' }
+});
+
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 100,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => req.method === 'POST' && req.path === '/api/auth/login',
+  message: { error: 'Demasiadas solicitudes. Probá de nuevo en un minuto.' }
+});
+
+app.use(generalLimiter);
+
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
+  const { email, password } = req.body || {};
   if (!email || !password) {
     return res.status(400).json({ error: 'Email y password son requeridos' });
+  }
+  if (!isValidString(email, 3, 254) || !isValidString(password, 1, 128)) {
+    return res.status(400).json({ error: 'Email o password con formato inválido' });
   }
   try {
     const response = await fetch('https://dev-z88basn0fhauwxqg.us.auth0.com/oauth/token', {
@@ -139,13 +193,19 @@ app.post('/api/auth/login', async (req, res) => {
     }
     return res.json({ token: data.access_token, email });
   } catch (err) {
-    return res.status(503).json({ error: 'Error de autenticación', detail: err.message });
+    console.log('[Auth] Error:', err);
+    return res.status(503).json({ error: 'Error de autenticación' });
   }
 });
 
 app.get('/', async (req, res) => {
-  const result = await pool.query('SELECT COUNT(*) FROM tasas');
-  res.json({ status: 'ok', fechas_en_db: parseInt(result.rows[0].count) });
+  try {
+    const result = await pool.query('SELECT COUNT(*) FROM tasas');
+    res.json({ status: 'ok', fechas_en_db: parseInt(result.rows[0].count) });
+  } catch (err) {
+    console.log('[Status] Error:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
 app.get('/api/rates', requireAuth, async (req, res) => {
@@ -225,14 +285,16 @@ app.get('/api/rates', requireAuth, async (req, res) => {
     console.log('rates:', JSON.stringify({ ...rates, euro, euro_date }));
     res.json({ ...rates, euro, euro_date, cached: false });
   } catch (err) {
+    console.log('[Rates] Error:', err);
     if (currentCache.data) return res.json({ ...currentCache.data, euro, euro_date, cached: true, stale: true });
-    res.status(503).json({ error: 'No se pudieron obtener las tasas', detail: err.message });
+    res.status(503).json({ error: 'No se pudieron obtener las tasas' });
   }
 });
 
 app.get('/api/rates/history', requireAuth, async (req, res) => {
   const { from } = req.query;
   if (!from) return res.status(400).json({ error: 'Se requiere from en formato DD-MM-YYYY' });
+  if (!isValidDate(from)) return res.status(400).json({ error: 'Fecha inválida: from debe ser una fecha real en formato DD-MM-YYYY' });
 
   const [dd, mm, yyyy] = from.split('-');
   const fecha = new Date(yyyy + '-' + mm + '-' + dd);
@@ -308,8 +370,8 @@ app.get('/api/rates/history', requireAuth, async (req, res) => {
       from
     });
   } catch (err) {
-    console.error('Error:', err.message);
-    res.status(503).json({ error: 'Error buscando tasa', detail: err.message });
+    console.log('[History] Error:', err);
+    res.status(503).json({ error: 'Error buscando tasa' });
   }
 });
 
@@ -451,6 +513,7 @@ async function scrapeEuroFromBCV(fullScrape = false) {
 app.get('/api/rates/euro', requireAuth, async (req, res) => {
   const { date } = req.query;
   if (!date) return res.status(400).json({ error: 'Se requiere date en formato DD-MM-YYYY' });
+  if (!isValidDate(date)) return res.status(400).json({ error: 'Fecha inválida: date debe ser una fecha real en formato DD-MM-YYYY' });
 
   try {
     const result = await pool.query('SELECT * FROM tasas_euro WHERE fecha = $1', [date]);
@@ -459,7 +522,8 @@ app.get('/api/rates/euro', requireAuth, async (req, res) => {
     }
     res.json({ fecha: result.rows[0].fecha, euro: parseFloat(result.rows[0].euro) });
   } catch (err) {
-    res.status(503).json({ error: 'Error consultando euro', detail: err.message });
+    console.log('[Euro] Error consultando euro:', err);
+    res.status(503).json({ error: 'Error consultando euro' });
   }
 });
 
@@ -475,7 +539,8 @@ app.get('/api/rates/euro/status', requireAuth, async (req, res) => {
     const row = result.rows[0];
     res.json({ fechas_en_db: parseInt(row.count), primera: row.primera, ultima: row.ultima });
   } catch (err) {
-    res.status(503).json({ error: 'Error consultando estado euro', detail: err.message });
+    console.log('[Euro] Error consultando estado:', err);
+    res.status(503).json({ error: 'Error consultando estado euro' });
   }
 });
 
@@ -487,14 +552,20 @@ app.get('/api/rates/euro/scrape', async (req, res) => {
     const fecha = r.rows[0]?.ultima ?? '';
     res.json({ ok: true, saved, fecha });
   } catch (err) {
-    res.status(503).json({ error: 'Error scrapeando euro', detail: err.message });
+    console.log('[Euro] Error scrapeando:', err);
+    res.status(503).json({ error: 'Error scrapeando euro' });
   }
 });
 
 app.get('/api/cache/status', requireAuth, async (req, res) => {
-  const result = await pool.query('SELECT COUNT(*), MIN(fecha), MAX(fecha) FROM tasas');
-  const row = result.rows[0];
-  res.json({ fechas_en_db: parseInt(row.count), primera: row.min, ultima: row.max });
+  try {
+    const result = await pool.query('SELECT COUNT(*), MIN(fecha), MAX(fecha) FROM tasas');
+    const row = result.rows[0];
+    res.json({ fechas_en_db: parseInt(row.count), primera: row.min, ultima: row.max });
+  } catch (err) {
+    console.log('[Cache] Error:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
 });
 
 app.listen(PORT, async () => {
